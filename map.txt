@@ -1,0 +1,16 @@
+src/
+ ├─ core/
+ │    ├─ action/
+ │    │     ├─ action-result.ts
+ │    │     ├─ action-exception.ts
+ │    │     └─ base-action.ts
+ │    └─ base-action-gateway.ts
+ │
+ ├─ shared/
+ │    ├─ http/http-gateway.ts
+ │    ├─ interceptors/logging.interceptor.ts
+ │    └─ helpers/...
+ │
+ ├─ holiday/
+ ├─ calculator/
+ └─ app.module.ts
