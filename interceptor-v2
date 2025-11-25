@@ -1,0 +1,323 @@
+// src/shared/interceptors/logging.interceptor.ts
+// ============================================================
+// INTERCEPTOR 100% TIPADO + NORMALIZADO (FINAL)
+// ============================================================
+
+import {
+  CallHandler,
+  ExecutionContext,
+  HttpStatus,
+  Injectable,
+  NestInterceptor,
+} from '@nestjs/common';
+import { Observable, of } from 'rxjs';
+import { catchError, map } from 'rxjs/operators';
+import { v4 } from 'uuid';
+import { AxiosError } from 'axios';
+import { ILog } from '@/shared/helpers/logs-helper';
+import { DateHelper } from '@/shared/helpers/date-helper';
+import { Errors } from '@/shared/enum/errors';
+import { LoggerUtil } from '@/shared/logger/logger.util';
+import { ActionException } from 'src/core/action/action-exception';
+import { ActionFailure } from 'src/core/action/action-result';
+import {
+  ActionExceptionMeta,
+  ActionExceptionDetails,
+} from 'src/core/action/action-types';
+
+// -------------------------------------------------------------
+// TIPOS BASE
+// -------------------------------------------------------------
+export type UnknownError = unknown;
+
+export interface HttpRequestLike {
+  method: string;
+  body: unknown;
+  headers: Record<string, unknown>;
+  route?: { path: string };
+  protocol: string;
+  originalUrl: string;
+}
+
+export interface HttpResponseLike {
+  headers?: Record<string, unknown>;
+}
+
+export interface NormalizedError {
+  code: string;
+  message: string;
+  status: number;
+  details: ActionExceptionDetails | null;
+  meta: ActionExceptionMeta | null;
+  cause: unknown;
+  raw: unknown;
+}
+
+export interface ExternalRequestInfo {
+  url?: string;
+  method?: string;
+  params?: Record<string, unknown>;
+  data?: unknown;
+  headers?: Record<string, unknown>;
+}
+
+export interface ExternalResponseInfo {
+  status?: number;
+  message?: string;
+  headers?: Record<string, unknown>;
+  data?: unknown;
+}
+
+// ============================================================
+// INTERCEPTOR FINAL
+// ============================================================
+@Injectable()
+export class LoggingInterceptor implements NestInterceptor {
+  private readonly CODES = [404, 400, 422];
+
+  intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
+    const request = context.switchToHttp().getRequest<HttpRequestLike>();
+    const response = context.switchToHttp().getResponse<HttpResponseLike>();
+    const startTime = Date.now();
+
+    request.headers['startTime'] = startTime;
+
+    const controller = context.getClass().name;
+    const handler = context.getHandler().name;
+
+    return next.handle().pipe(
+      map((data: unknown): unknown => data),
+
+      catchError((err: UnknownError) => {
+        const normalized = this.normalizeError(err);
+        const log = this.createErrorLog(request, response, normalized, startTime);
+
+        LoggerUtil.error(`${controller}.${handler}`, log);
+
+        const failure: ActionFailure<never> = {
+          code: normalized.status,
+          error: [
+            {
+              originErrorCode: normalized.code,
+              originErrorDetails: normalized.details ?? undefined,
+              errorCode: this.mapToFriendlyCode(normalized),
+              userMessage: this.mapToFriendlyMessage(normalized),
+            },
+          ],
+        };
+
+        response.status(normalized.status);
+        return of(failure);
+      }),
+    );
+  }
+
+  // ============================================================
+  // NORMALIZA ERROS
+  // ============================================================
+  private normalizeError(err: UnknownError): NormalizedError {
+    // 1) ActionException
+    if (err instanceof ActionException) {
+      return {
+        code: err.code,
+        message: err.message,
+        status: err.meta?.status ?? HttpStatus.INTERNAL_SERVER_ERROR,
+        details: err.details ?? null,
+        meta: err.meta ?? null,
+        cause: err.cause,
+        raw: err,
+      };
+    }
+
+    // 2) AxiosError
+    if (this.isAxiosError(err)) {
+      const respData = err.response?.data as Record<string, unknown> | undefined;
+
+      return {
+        code: err.code ?? 'UPSTREAM_ERROR',
+        message:
+          typeof respData?.message === 'string'
+            ? respData.message
+            : err.message ?? 'Erro desconhecido',
+        status: err.response?.status ?? HttpStatus.INTERNAL_SERVER_ERROR,
+        details: (respData as ActionExceptionDetails) ?? null,
+        meta: null,
+        cause: err,
+        raw: err,
+      };
+    }
+
+    // 3) Error comum
+    if (err instanceof Error) {
+      return {
+        code: 'INTERNAL_ERROR',
+        message: err.message,
+        status: HttpStatus.INTERNAL_SERVER_ERROR,
+        details: null,
+        meta: null,
+        cause: err,
+        raw: err,
+      };
+    }
+
+    // 4) fallback
+    return {
+      code: 'UNKNOWN_ERROR',
+      message: 'Erro desconhecido',
+      status: HttpStatus.INTERNAL_SERVER_ERROR,
+      details: null,
+      meta: null,
+      cause: err,
+      raw: err,
+    };
+  }
+
+  private isAxiosError(err: unknown): err is AxiosError {
+    return (
+      typeof err === 'object' &&
+      err !== null &&
+      'isAxiosError' in err &&
+      (err as unknown).isAxiosError === true
+    );
+  }
+
+  // ============================================================
+  // GERA LOG
+  // ============================================================
+  private createErrorLog(
+    request: HttpRequestLike,
+    response: HttpResponseLike,
+    error: NormalizedError,
+    startTime: number,
+  ): ILog {
+    const duration = Date.now() - startTime;
+    const host = request.headers['host'];
+    const url = `${request.protocol}://${host}${request.originalUrl}`;
+
+    const extReq = this.extractExternalRequest(error.raw);
+    const extRes = this.extractExternalResponse(error.raw);
+
+    return {
+      type: 'BFF',
+      service: 'giroassistido',
+      id: v4(),
+      status: error.status,
+      method: request.method,
+      path: request.route ? request.route.path : url,
+      timestamp: DateHelper.currentDateLocalIsoString(),
+      duration: `${duration}ms`,
+      url,
+      correlation_id: request.headers['x-itau-correlationid'] as string,
+
+      request: {
+        headers: request.headers,
+        data: request.body,
+        timestamp: DateHelper.currentDateLocalIsoString(),
+      },
+
+      response: {
+        headers: response.headers ?? {},
+        data: {
+          message: error.message ?? Errors.DEFAULT_ERROR_MESSAGE,
+          description:
+            error.details?.description ?? Errors.DEFAULT_ERROR_DESCRIPTION,
+          stack: (error.cause as unknown)?.stack ?? Errors.DEFAULT_ERROR_STACK,
+          code: error.code,
+        },
+        timestamp: DateHelper.currentDateLocalIsoString(),
+      },
+
+      external: {
+        request: {
+          url: extReq.url ?? 'N/A',
+          method: extReq.method,
+          params: extReq.params ?? {},
+          data: extReq.data ?? {},
+          headers: extReq.headers ?? {},
+          timestamp: DateHelper.currentDateLocalIsoString(),
+        },
+        response: {
+          status: extRes.status ?? 0,
+          message: extRes.message,
+          headers: extRes.headers ?? {},
+          data: extRes.data ?? {},
+        },
+      },
+    };
+  }
+
+  // ============================================================
+  // EXTRAÇÃO SEGURA (Axios)
+  // ============================================================
+  private extractExternalRequest(err: UnknownError): ExternalRequestInfo {
+    if (this.isAxiosError(err)) {
+      return {
+        url: err.config?.url,
+        method: err.config?.method,
+        params: err.config?.params,
+        data: err.config?.data,
+        headers: err.config?.headers,
+      };
+    }
+    return {};
+  }
+
+  private extractExternalResponse(err: UnknownError): ExternalResponseInfo {
+    if (this.isAxiosError(err)) {
+      const respData = err.response?.data as Record<string, unknown> | undefined;
+
+      return {
+        status: err.response?.status,
+        message:
+          typeof respData?.message === 'string'
+            ? respData.message
+            : err.message ?? 'Erro desconhecido',
+        headers: err.response?.headers,
+        data: respData ?? {},
+      };
+    }
+    return {};
+  }
+
+  private mapToFriendlyCode(error: NormalizedError): string {
+    // Erros de DTO (Payload inválido)
+    if (error.code === 'BadRequestException' || error.status === 400) {
+      return 'REQUEST_INVALID_PAYLOAD';
+    }
+
+    // Erro vindo da API externa
+    if (error.code === 'UPSTREAM_ERROR' || error.status >= 500) {
+      return 'EXTERNAL_BUSINESS_ERROR';
+    }
+
+    // Erro de negócio tratado
+    if (error.code === 'BUSINESS_ERROR') {
+      return 'BUSINESS_ERROR';
+    }
+
+    // Erro interno do BFF
+    return 'INTERNAL_SERVER_ERROR';
+  }
+
+
+  private mapToFriendlyMessage(error: NormalizedError): string {
+    // DTO inválido
+    if (error.status === 400) {
+      return 'Os dados enviados são inválidos.';
+    }
+
+    // Backend externo retornou erro
+    if (error.status >= 500) {
+      return 'Não foi possível processar sua solicitação no momento.';
+    }
+
+    // Erros de negócio (ActionException BAD_REQUEST)
+    if (error.status === 422) {
+      return error.message;
+    }
+
+    // Padrão fallback
+    return 'Ocorreu um erro inesperado.';
+  }
+
+}
