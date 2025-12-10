@@ -1,0 +1,44 @@
+import { saveAs } from 'file-saver';
+import * as XLSX from 'xlsx';
+
+export class ExportService {
+  async gerarExcelComTemplate() {
+    const file = await fetch('/assets/teste.xlsx');
+    const data = await file.arrayBuffer();
+
+    const wb = XLSX.read(data, { type: 'array' });
+
+    const sheetName = wb.SheetNames[0];
+    const sheet = wb.Sheets[sheetName];
+
+    // 🔥 Escrevendo valores corretamente
+    this.set(sheet, 'A5', 'Coxinha');
+    this.set(sheet, 'B5', 120);
+    this.set(sheet, 'C5', 2.5);
+
+    this.set(sheet, 'A6', 'Rissole');
+    this.set(sheet, 'B6', 80);
+    this.set(sheet, 'C6', 3.0);
+
+    // 🔑 ***AQUI ESTÁ A CORREÇÃO IMPORTANTE***
+    sheet['!ref'] = XLSX.utils.encode_range({
+      s: { r: 0, c: 0 },
+      e: { r: 2000, c: 50 },
+    });
+
+    const excelBuffer = XLSX.write(wb, {
+      bookType: 'xlsx',
+      type: 'array',
+    });
+
+    const blob = new Blob([excelBuffer], { type: 'application/octet-stream' });
+    saveAs(blob, 'resultado.xlsx');
+  }
+
+  private set(sheet: XLSX.WorkSheet, cell: string, value: any) {
+    sheet[cell] = {
+      t: typeof value === 'number' ? 'n' : 's',
+      v: value,
+    };
+  }
+}
