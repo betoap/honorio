@@ -179,3 +179,74 @@ export class ExcelTemplateWriter {
     return styleIndex;
   }
 }
+
+
+
+
+private async ensureStyleWithFill(zip: JSZip, hexColor: string): Promise<number> {
+  const stylesPath = 'xl/styles.xml';
+  let xml = await zip.file(stylesPath)!.async('string');
+
+  hexColor = hexColor.replace('#', '').toUpperCase();
+
+  // -----------------------------
+  // 1) FILL: procurar ou criar
+  // -----------------------------
+  const fillsHeaderMatch = xml.match(/<fills[^>]*count="(\d+)"/);
+  const fillCount = fillsHeaderMatch ? parseInt(fillsHeaderMatch[1], 10) : 0;
+
+  let fillIndex = -1;
+
+  // Percorre todos os <fill>...</fill> manualmente (sem matchAll)
+  const fillTagRegex = /<fill>[\s\S]*?<\/fill>/g;
+  const fills: string[] = [];
+  let match: RegExpExecArray | null;
+
+  while ((match = fillTagRegex.exec(xml)) !== null) {
+    fills.push(match[0]);
+  }
+
+  fillIndex = fills.findIndex(f =>
+    f.indexOf(`rgb="FF${hexColor}"`) !== -1
+  );
+
+  // Se não encontrou, cria um novo fill
+  if (fillIndex === -1) {
+    const newFill =
+      `<fill><patternFill patternType="solid"><fgColor rgb="FF${hexColor}"/></patternFill></fill>`;
+
+    xml = xml.replace('</fills>', `${newFill}</fills>`);
+
+    // Atualiza o count de fills
+    xml = xml.replace(
+      /<fills([^>]*)count="(\d+)"/,
+      (_m, attrs, n) => `<fills${attrs}count="${parseInt(n, 10) + 1}"`
+    );
+
+    fillIndex = fillCount;
+  }
+
+  // -----------------------------
+  // 2) XF: criar estilo usando esse fill
+  // -----------------------------
+  const xfsHeaderMatch = xml.match(/<cellXfs[^>]*count="(\d+)"/);
+  const xfsCount = xfsHeaderMatch ? parseInt(xfsHeaderMatch[1], 10) : 0;
+
+  const newXf =
+    `<xf xfId="0" applyFill="1" fillId="${fillIndex}" fontId="0" borderId="0" numFmtId="0"/>`;
+
+  xml = xml.replace('</cellXfs>', `${newXf}</cellXfs>`);
+
+  const styleIndex = xfsCount;
+
+  xml = xml.replace(
+    /<cellXfs([^>]*)count="(\d+)"/,
+    (_m, attrs, n) => `<cellXfs${attrs}count="${parseInt(n, 10) + 1}"`
+  );
+
+  // Salva o styles.xml modificado
+  zip.file(stylesPath, xml);
+
+  return styleIndex;
+}
+
