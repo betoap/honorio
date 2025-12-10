@@ -94,3 +94,83 @@ export class ExcelTemplateWriter {
     return sheetXml.replace('</sheetData>', `${newCell}</sheetData>`);
   }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+private async setCellValue(
+  zip: JSZip,
+  sheetXml: string,
+  cellRef: string,
+  value: string
+): Promise<string> {
+
+  const cellRegex = new RegExp(`<c[^>]*r="${cellRef}"[^>]*>[\\s\\S]*?<\\/c>`, 'm');
+
+  if (cellRegex.test(sheetXml)) {
+    return sheetXml.replace(cellRegex, (cellXml: string) => {
+      // -------------------------
+      // 1) PEGAR ESTILO EXISTENTE
+      // -------------------------
+      const styleMatch = cellXml.match(/s="(\d+)"/);
+      const style = styleMatch ? `s="${styleMatch[1]}"` : "";
+
+      // -------------------------
+      // 2) PEGAR FORMULA ORIGINAL
+      // -------------------------
+      const formulaMatch = cellXml.match(/<f[^>]*>([\s\S]*?)<\/f>/);
+
+      const formula = formulaMatch
+        ? formulaMatch[1]    // conteúdo da fórmula
+        : null;
+
+      // -------------------------
+      // 3) REESCREVER CÉLULA
+      // (removendo shared formulas)
+      // -------------------------
+      if (formula) {
+        return `
+          <c r="${cellRef}" ${style}>
+            <f>${formula}</f>
+            <v>${value}</v>
+          </c>
+        `;
+      }
+
+      // Se não tiver fórmula → valor puro
+      return `<c r="${cellRef}" ${style}><v>${value}</v></c>`;
+    });
+  }
+
+  // -----------------------------------------------------
+  // Se a célula não existir → criar uma nova simples
+  // -----------------------------------------------------
+  return sheetXml.replace(
+    '</sheetData>',
+    `<c r="${cellRef}"><v>${value}</v></c></sheetData>`
+  );
+}
+
